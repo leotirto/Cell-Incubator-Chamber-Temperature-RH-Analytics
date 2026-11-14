@@ -1,0 +1,29 @@
+# Sensor readings and derived reports (do not commit experimental data)
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.parquet
+*.feather
+*.html
+*.zip
+analysis_output/
+data/
+datasets/
+outputs/
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*credentials*.json
+*secret*.json
+
+# Python / notebooks
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+.DS_Store
