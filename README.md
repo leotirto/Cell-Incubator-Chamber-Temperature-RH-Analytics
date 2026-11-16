@@ -65,6 +65,19 @@ CI runs synthetic-data tests on Python 3.11 and 3.12 for pushes and pull request
 - Timestamps are interpreted as device-local values by default; synchronize sensors for cross-sensor comparisons.
 - This is an engineering analysis tool, not a validated regulatory compliance or alarm-monitoring system.
 
+### Colab CSV loading troubleshooting
+
+The controller notebook now enables Colab's custom widget communication bridge and
+provides **native code-cell loaders** for both Google Drive and browser uploads.
+After running the notebook's setup and dashboard cells, run **one** native loader
+cell in section 2A (Drive **or** Upload), then click **Analyze selected window**.
+Switching the input dropdown alone does not open the native upload chooser. If a
+button still does not respond, run the **Direct analysis fallback** cell in section 2B.
+
+**Do not use Runtime → Run all for a source-specific session:** it would execute
+both alternative loader cells. Execute the setup, your chosen loader, and the
+analysis cells instead.
+
 ## Incubator controller log / recovery analytics (new)
 
 Analyze incubator firmware controller logs containing `T Steam`, `T Chamber`,
