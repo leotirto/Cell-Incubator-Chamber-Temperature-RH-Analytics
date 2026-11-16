@@ -77,3 +77,41 @@ python -m pytest -q tests
 ```
 
 Test records are synthesized; the supplied experimental CSV has **not** been committed to GitHub.
+
+
+## Drop recovery at temperature, RH and CO₂ thresholds
+
+The controller notebook's **Drop recovery** tab uses three independently editable
+lower limits (default: **T Chamber 36.5 °C, RH 85%, CO₂ 47000 raw logger units**).
+These limits are analytical references and are **not assumed firmware setpoints**.
+No CO₂ conversion to ppm or percent is performed.
+
+For each channel, an event begins at the first observed sample strictly **below**
+its threshold. Recovery requires a sample at/above the threshold followed by
+continuous **observed** above-threshold readings for the configured hold
+(default 30 seconds). Temporary rebounds that do not complete the hold are
+part of the same episode. The algorithm reports the first return timestamp,
+the hold confirmation timestamp, observed recovery duration in minutes,
+worst reading, drop depth, and a recovery-status flag.
+
+A fourth summary **Any below threshold** tracks the period during which at
+least one of the measured channels is below its lower limit; it ends only when
+all measured channels are above their limits for the hold duration. This metric
+does not claim all three sensors dropped simultaneously.
+
+**Boundaries:** A drop already present at the start of a selected row/time
+window is left-censored; its true onset is unknown. An episode without a
+confirmed recovery is reported as missing/NaN, not zero. Missing samples or
+time gaps above the maximum tolerated gap interrupt recovery confirmation.
+RH values of exactly zero are retained unless you explicitly choose the
+masking option. Such low values can represent faults rather than real
+environmental changes; interpret any RH recovery times accordingly.
+
+Outputs: `drop_recovery.csv` alongside the existing CSV reports, threshold
+line plots with drop and recovery markers, grouped recovery-time bars, and
+per-controller-file batch comparison columns.
+
+Batch usage:
+```bash
+python incubator_controller_analytics.py --folder "/path/to/CSV" --co2-threshold 47000
+```
