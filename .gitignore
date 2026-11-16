@@ -27,3 +27,7 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+
+# Controller log analysis exports (private experimental measurements)
+controller_analysis_output/
+controller_analytics_exports/

@@ -64,3 +64,23 @@ CI runs synthetic-data tests on Python 3.11 and 3.12 for pushes and pull request
 - Test results are from synthetic data; real sensor CSVs were not included for validation.
 - Timestamps are interpreted as device-local values by default; synchronize sensors for cross-sensor comparisons.
 - This is an engineering analysis tool, not a validated regulatory compliance or alarm-monitoring system.
+
+## Incubator controller log / recovery analytics (new)
+
+Analyze incubator firmware controller logs containing `T Steam`, `T Chamber`,
+`T Bot`, `T Door`, `T Port`, `RH`, `CO2`, `STC31` and signed
+`Ctrl ...` PID commands. This is **separate** from the existing Govee
+multi-sensor notebook.
+
+- [Open the interactive controller-log notebook in Google Colab](https://colab.research.google.com/github/leotirto/Cell-Incubator-Chamber-Temperature-RH-Analytics/blob/main/Incubator_Controller_Recovery_Analytics.ipynb)
+- [Read the controller-log analytics guide](CONTROLLER_LOG_ANALYTICS.md)
+- Reusable Python module: `incubator_controller_analytics.py`
+- Synthetic regression tests: `tests/test_incubator_controller_analytics.py`
+
+Select CSV files, inclusive row ranges and/or timestamp windows; inspect
+measured values and PID commands, threshold hold times, time-in-band, excursions,
+recovery, control-sign occupancy/saturation and correlation/lag. Export processed
+CSV tables and interactive Plotly HTML.
+
+**No raw experimental CSV is committed.** CO2/STC31 units and physical
+controller directions are not assumed; reference targets are editable examples.
