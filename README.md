@@ -97,3 +97,8 @@ CSV tables and interactive Plotly HTML.
 
 **No raw experimental CSV is committed.** CO2/STC31 units and physical
 controller directions are not assumed; reference targets are editable examples.
+
+**New — threshold drop recovery:** T Chamber ≥ 36.5°C, RH ≥ 85%, CO₂ ≥ 47000
+(raw logged units), all editable in Colab. The **Drop recovery** tab adds
+per-event return/confirmation times, timeline markers, grouped recovery bars,
+and `drop_recovery.csv` in exports. See [interpretation and limitations](CONTROLLER_LOG_ANALYTICS.md#drop-recovery-at-temperature-rh-and-co₂-thresholds).
