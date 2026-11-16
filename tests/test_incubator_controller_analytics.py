@@ -155,3 +155,45 @@ if __name__ == "__main__":
     test_realistic_structure_and_qa();test_features_stats_and_zero_flag()
     test_excursion_recovery_detection();test_graphs_and_lag();test_invalid_csv_and_gaps()
     print("ALL SYNTHETIC CONTROLLER LOG TESTS PASSED")
+
+def test_drop_recovery_sustained_hold_and_incomplete_events():
+    from incubator_controller_analytics import (
+        detect_drop_recovery, plot_drop_recovery, plot_recovery_bars
+    )
+    times = pd.date_range("2026-11-14 12:00:00", periods=70, freq="1s")
+    t = np.full(70, 37.0)
+    rh = np.full(70, 90.0)
+    co2 = np.full(70, 49000.0)
+    t[10:18] = 35.5
+    rh[11:15] = 75
+    rh[22:29] = 76
+    co2[12:19] = 45000
+    co2[22:26] = 46000  # temporary rebound does not complete hold
+    frame = pd.DataFrame({TIME: times, "T Chamber":t,"RH":rh,"CO2":co2})
+    events = detect_drop_recovery(frame, hold_s=5, max_gap_seconds=2)
+    temp = events[events.Channel.eq("T Chamber")].iloc[0]
+    assert temp.Recovered and not temp.Left_censored
+    assert temp.Recovery_min == 8/60
+    assert temp.Confirmation_min == 13/60
+    co = events[events.Channel.eq("CO2")].iloc[0]
+    assert co.Recovered and co.Recovery_min == 14/60 and co.Worst_value == 45000
+    assert len(events[events.Channel.eq("RH")]) == 2
+    assert events[events.Channel.eq("Any below threshold")].iloc[0].Recovery_min == 19/60
+    assert len(plot_drop_recovery(frame, events).data) > 0
+    assert len(plot_recovery_bars(events).data) > 0
+    incomplete = detect_drop_recovery(frame.iloc[:24], hold_s=6)
+    assert not incomplete[incomplete.Channel.eq("RH")].iloc[-1].Recovered
+    left = detect_drop_recovery(frame.iloc[11:], hold_s=5)
+    assert left[left.Channel.eq("T Chamber")].iloc[0].Left_censored
+    gap = frame.iloc[:24].copy()
+    gap.loc[gap.index >= 18,TIME] += pd.Timedelta(seconds=45)
+    no_bridge = detect_drop_recovery(gap, hold_s=5, max_gap_seconds=2)
+    assert not no_bridge[no_bridge.Channel.eq("T Chamber")].iloc[0].Recovered
+    with tempfile.TemporaryDirectory() as td:
+        csv = Path(td) / "controller.csv"
+        fake_log(csv)
+        report = build_report(read_controller_log(csv), co2_threshold=47000)
+        assert report["parameters"]["co2_threshold"] == 47000
+        assert "drop_recovery" in report
+        out=export_report(report,Path(td)/"report")
+        assert (out/"drop_recovery.csv").exists()
