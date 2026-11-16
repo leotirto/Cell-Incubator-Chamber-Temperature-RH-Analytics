@@ -406,6 +406,156 @@ def find_excursions(df: pd.DataFrame, channel: str, target: float, tolerance: fl
     return pd.DataFrame(rows, columns=columns)
 
 
+def detect_drop_recovery(df: pd.DataFrame, *, thresholds: Mapping[str, float] | None = None,
+                         hold_s: float = 30, max_gap_seconds: float = 5,
+                         min_drop_duration_s: float = 0,
+                         include_combined: bool = True) -> pd.DataFrame:
+    """Observed BELOW-threshold episodes and subsequent sustained threshold recovery.
+
+    An event begins at the first sampled low value; it ends only after an above-
+    threshold run lasting hold_s. Short temporary returns are part of the same
+    event. No interpolation is used. Long sampling gaps and null measurements
+    break episodes; unresolved events cannot be assumed to recover across gaps.
+    A low value at the left edge is marked as left-censored (onset unknown).
+    """
+    thresholds = dict(thresholds or {"T Chamber": 36.5, "RH": 85.0, "CO2": 47000.0})
+    columns = ["Channel", "Threshold", "Drop_start", "Last_below", "Worst_value",
+               "Worst_at", "Depth_below_threshold", "Below_samples",
+               "Below_observed_span_s", "Left_censored", "Recovered",
+               "Recovery_start", "Recovery_confirmed", "Recovery_min",
+               "Confirmation_min", "Status"]
+    if hold_s < 0 or max_gap_seconds <= 0 or min_drop_duration_s < 0:
+        raise ValueError("Hold, maximum gap and minimum drop duration must be valid")
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    work = df.sort_values(TIME, kind="stable").drop_duplicates(subset=[TIME], keep="first").reset_index(drop=True)
+    channels = [(key, val) for key, val in thresholds.items() if key in work.columns]
+    if include_combined and len(channels) >= 2:
+        channels.append(("Any below threshold", np.nan))
+    rows = []
+    timestamps = work[TIME]
+    for channel, threshold in channels:
+        combined = channel == "Any below threshold"
+        used = [key for key, _ in channels if key != "Any below threshold"] if combined else [channel]
+        valid = work[used].notna().all(axis=1).to_numpy(dtype=bool)
+        if combined:
+            below = np.logical_or.reduce([work[key].lt(value).fillna(False).to_numpy(dtype=bool)
+                                          for key, value in thresholds.items() if key in used])
+        else:
+            below = work[channel].lt(threshold).fillna(False).to_numpy(dtype=bool)
+        n = len(work)
+        segments = []
+        first = None
+        for i in range(n):
+            gap = i > 0 and ((timestamps.iloc[i]-timestamps.iloc[i-1]).total_seconds() <= 0 or
+                            (timestamps.iloc[i]-timestamps.iloc[i-1]).total_seconds() > max_gap_seconds)
+            if (gap or not valid[i]) and first is not None:
+                segments.append((first, i-1))
+                first = None
+            if valid[i] and first is None:
+                first = i
+        if first is not None:
+            segments.append((first,n-1))
+        for segment_start, segment_end in segments:
+            i = segment_start
+            while i <= segment_end:
+                if not below[i]:
+                    i += 1
+                    continue
+                onset = i
+                left_censored = onset == segment_start
+                last_low = i
+                recovery = None
+                confirmed = None
+                j = i+1
+                while j <= segment_end:
+                    if below[j]:
+                        last_low = j
+                        j += 1
+                        continue
+                    good_start = j
+                    while j <= segment_end and not below[j]:
+                        j += 1
+                    if (timestamps.iloc[j-1] - timestamps.iloc[good_start]).total_seconds() >= hold_s:
+                        recovery = good_start
+                        goal = timestamps.iloc[good_start]+pd.Timedelta(seconds=hold_s)
+                        confirmed = int(timestamps.iloc[good_start:j].searchsorted(goal,side="left"))+good_start
+                        break
+                    # An unconfirmed above-threshold run is not a recovery.
+                low_idxs = np.flatnonzero(below[onset:last_low+1]) + onset
+                span = (timestamps.iloc[last_low]-timestamps.iloc[onset]).total_seconds()
+                if span >= min_drop_duration_s:
+                    if combined:
+                        normalized = pd.DataFrame({key: thresholds[key]-work[key].iloc[onset:last_low+1]
+                                                   for key in used})
+                        depth = normalized.max(axis=1)
+                        worst_local = depth.idxmax()
+                        worst = np.nan
+                        worst_depth = float(depth.max())
+                    else:
+                        series=work[channel].iloc[onset:last_low+1]
+                        worst_local = series.idxmin()
+                        worst = float(series.min())
+                        worst_depth = float(threshold-worst)
+                    recovered = recovery is not None
+                    start_time = timestamps.iloc[onset]
+                    recovery_start = timestamps.iloc[recovery] if recovered else pd.NaT
+                    recovery_confirmed = timestamps.iloc[confirmed] if recovered else pd.NaT
+                    rows.append({"Channel": channel, "Threshold": threshold,
+                        "Drop_start": start_time, "Last_below": timestamps.iloc[last_low],
+                        "Worst_value": worst, "Worst_at": timestamps.iloc[worst_local],
+                        "Depth_below_threshold": worst_depth, "Below_samples": int(len(low_idxs)),
+                        "Below_observed_span_s": span, "Left_censored": bool(left_censored),
+                        "Recovered": recovered, "Recovery_start": recovery_start,
+                        "Recovery_confirmed": recovery_confirmed,
+                        "Recovery_min": (recovery_start-start_time).total_seconds()/60 if recovered else np.nan,
+                        "Confirmation_min": (recovery_confirmed-start_time).total_seconds()/60 if recovered else np.nan,
+                        "Status": ("left-censored; " if left_censored else "") + ("recovered" if recovered else "not confirmed")})
+                i = confirmed+1 if recovery is not None else segment_end+1
+    return pd.DataFrame(rows,columns=columns)
+
+
+def plot_drop_recovery(df: pd.DataFrame, events: pd.DataFrame,
+                       thresholds: Mapping[str, float] | None = None) -> go.Figure:
+    """Three synchronized measured profiles and markers for observed drops/recovery."""
+    thresholds = dict(thresholds or {"T Chamber": 36.5,"RH": 85,"CO2": 47000})
+    channels=[c for c in ("T Chamber","RH","CO2") if c in df and c in thresholds]
+    fig=make_subplots(rows=len(channels),cols=1,shared_xaxes=True,
+                      subplot_titles=[f"{c} (threshold {thresholds[c]:g})" for c in channels],
+                      vertical_spacing=.09)
+    for r,c in enumerate(channels,1):
+        fig.add_trace(go.Scatter(x=df[TIME],y=df[c],name=c,mode="lines",
+                                 line=dict(color=COLOURS.get(c))),row=r,col=1)
+        fig.add_hline(y=thresholds[c],row=r,col=1,line_dash="dash",line_color="#dc2626")
+        if not events.empty:
+            subset=events[events.Channel.eq(c)]
+            fig.add_trace(go.Scatter(x=subset.Drop_start,y=[thresholds[c]]*len(subset),
+                                     mode="markers",name=f"{c} drops",legendgroup=f"{c} drops",
+                                     marker=dict(color="#dc2626",size=9,symbol="triangle-down")),row=r,col=1)
+            recovered=subset[subset.Recovered]
+            fig.add_trace(go.Scatter(x=recovered.Recovery_start,y=[thresholds[c]]*len(recovered),
+                                     mode="markers",name=f"{c} recovery",legendgroup=f"{c} recovery",
+                                     marker=dict(color="#16a34a",size=9,symbol="circle")),row=r,col=1)
+    fig.update_xaxes(title_text="Logged timestamp",row=len(channels),col=1)
+    return _layout(fig,"Below-threshold drops and observed recovery",height=300*len(channels)+100)
+
+
+def plot_recovery_bars(events: pd.DataFrame) -> go.Figure:
+    """Recovered episode times in minutes; unresolved episodes omitted, not zeroed."""
+    fig=go.Figure()
+    if not events.empty:
+        recovered=events[events.Recovered & events.Channel.ne("Any below threshold")].copy()
+        if not recovered.empty:
+            recovered["Event"] = recovered.Channel + " • " + recovered.Drop_start.dt.strftime("%H:%M:%S")
+            fig.add_trace(go.Bar(x=recovered.Event,y=recovered.Recovery_min,
+                                 marker_color=[COLOURS.get(c,"#64748b") for c in recovered.Channel],
+                                 text=recovered.Recovery_min.round(2),textposition="outside",
+                                 hovertemplate="%{x}<br>Observed recovery: %{y:.3f} min<extra></extra>"))
+    fig.update_yaxes(title_text="Observed recovery time (minutes)")
+    fig.update_xaxes(title_text="Channel and drop onset")
+    return _layout(fig,"Recovery durations by drop episode (confirmed only)",height=520)
+
+
 def lag_correlation(df: pd.DataFrame, *, measurement: str = "RH", controller: str = "Ctrl RH",
                     bin_seconds: int = 10, max_lag_seconds: int = 300,
                     min_overlaps: int = 15) -> pd.DataFrame:
@@ -613,7 +763,8 @@ def build_report(log: LoadedLog, *, start_row: int | None = None, end_row: int |
                  rh_tolerance: float = 1.0, hold_seconds: float = 30,
                  excursion_min_seconds: float = 5,
                  co2_target: float | None = None, co2_tolerance: float | None = None,
-                 temp_threshold: float = 36.5, rh_threshold: float = 85.0) -> dict:
+                 temp_threshold: float = 36.5, rh_threshold: float = 85.0,
+                 co2_threshold: float = 47000.0) -> dict:
     """Consistent single-window report. Reference values are operator inputs, NOT setpoints."""
     df = select_window(log, start_row=start_row, end_row=end_row,
                        start_time=start_time, end_time=end_time)
@@ -636,15 +787,20 @@ def build_report(log: LoadedLog, *, start_row: int | None = None, end_row: int |
                     max_gap_seconds=max_gap_seconds) for ch, (target, tol) in targets.items()]
     event_frames = [f for f in event_frames if not f.empty]
     events = pd.concat(event_frames, ignore_index=True) if event_frames else pd.DataFrame()
+    drops = detect_drop_recovery(clean, thresholds={"T Chamber": temp_threshold,
+                                 "RH": rh_threshold, "CO2": co2_threshold},
+                                 hold_s=hold_seconds, max_gap_seconds=max_gap_seconds)
     return {"source": log.name, "data": clean, "quality": log.quality, "stats": summary,
             "controllers": controls, "threshold": pd.DataFrame([threshold]), "events": events,
+            "drop_recovery": drops,
             "targets": targets,
             "parameters": {"mask_rh_zeros": mask_rh_zeros, "max_gap_seconds": max_gap_seconds,
                            "smooth_seconds": smooth_seconds, "chamber_target": chamber_target,
                            "chamber_tolerance": chamber_tolerance, "rh_target": rh_target,
                            "rh_tolerance": rh_tolerance, "hold_seconds": hold_seconds,
                            "co2_target": co2_target, "co2_tolerance": co2_tolerance,
-                           "temp_threshold": temp_threshold, "rh_threshold": rh_threshold}}
+                           "temp_threshold": temp_threshold, "rh_threshold": rh_threshold,
+                           "co2_threshold": co2_threshold}}
 
 
 def export_report(report: dict, dest: str | Path, *, charts: Mapping[str, go.Figure] | None = None) -> Path:
@@ -653,7 +809,7 @@ def export_report(report: dict, dest: str | Path, *, charts: Mapping[str, go.Fig
     dest.mkdir(parents=True, exist_ok=True)
     for label, key in [("processed_readings", "data"), ("statistics", "stats"),
                        ("pid_statistics", "controllers"), ("threshold_reach", "threshold"),
-                       ("excursions", "events")]:
+                       ("excursions", "events"), ("drop_recovery", "drop_recovery")]:
         report[key].to_csv(dest / f"{label}.csv", index=False)
     (dest / "quality_report.json").write_text(
         pd.Series({"source": report["source"], "quality": report["quality"],
@@ -677,6 +833,7 @@ def _main() -> None:
     parser.add_argument("--mask-rh-zeros", action="store_true", help="Exclude RH=0 from calculations, keep RH_Original")
     parser.add_argument("--chamber-reference", type=float, default=37.0)
     parser.add_argument("--rh-reference", type=float, default=90.0)
+    parser.add_argument("--co2-threshold", type=float, default=47000.0, help="CO2 recovery threshold, raw logged units")
     parser.add_argument("--recursive", action="store_true")
     args = parser.parse_args()
     logs, failures = load_folder(args.folder, recursive=args.recursive)
@@ -688,7 +845,8 @@ def _main() -> None:
             report = build_report(log, start_row=args.start_row, end_row=args.end_row,
                                   start_time=args.start_time, end_time=args.end_time,
                                   mask_rh_zeros=args.mask_rh_zeros,
-                                  chamber_target=args.chamber_reference, rh_target=args.rh_reference)
+                                  chamber_target=args.chamber_reference, rh_target=args.rh_reference,
+                                  co2_threshold=args.co2_threshold)
             output = Path(args.output) / re.sub(r"[^A-Za-z0-9_-]", "_", fname)
             figs = {"profiles": plot_environment(report["data"], resample="10s", targets=report["targets"]),
                     "controllers": plot_controller_signals(report["data"], resample="10s"),
