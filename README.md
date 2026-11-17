@@ -122,3 +122,5 @@ Only confirmed recoveries with observed drop onset inside the selected window
 are included in median comparisons. An onset already in progress at the window
 boundary is flagged and excluded from timing comparisons. No drops or unrecovered
 episodes are shown as missing, never as zero-duration recovery.
+
+**Colab Run all UX (November 2026):** start/end timestamps and row filters are now always visible **above** the collapsible settings, under **TIME WINDOW — START / END**. The Drive CSV folder loader attempts the configured path and reports errors without interrupting the notebook. The Upload CSV cell deliberately defaults to `UPLOAD_NOW = False`; to upload, set it to `True` and run that cell explicitly. The direct-analysis fallback reads the same visible row/time controls rather than hardcoded dates.
