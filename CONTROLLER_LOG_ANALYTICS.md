@@ -115,3 +115,27 @@ Batch usage:
 ```bash
 python incubator_controller_analytics.py --folder "/path/to/CSV" --co2-threshold 47000
 ```
+
+## Comparing recovery in a selected time window
+
+For the same selected CSV, filter by absolute `From time` and `To time`
+(inclusive), or choose a relative last-30-minute/last-60-minute range from
+the loaded recording. Timestamp and row filters intersect; the quick presets
+reset row limits to the whole CSV.
+
+**Recovery comparison** adds a one-figure plot of *normalized below-threshold
+deficits*: `max(threshold - reading, 0) / largest observed deficit in the
+selected interval`. A zero deficit means the parameter is at or above its
+threshold. Normalization is solely for visual synchronization and does not
+imply equivalent physical impacts of temperature, RH, and CO₂ changes.
+The existing recovery chart continues to show each parameter in original
+measurement units.
+
+A comparison table summarizes drop counts, confirmed/unconfirmed recoveries,
+mean/median/min/max recovery times, left-censored events, and the difference
+between each parameter's median and the fastest parameter's median.
+When the selected time interval begins during a drop, the true onset is
+unknown: that episode is retained in event data but excluded from comparable
+median timings. This avoids making a mid-event selection appear to be a fast
+recovery. Recovered episodes are calculated independently from each
+parameter's own drop time, not from a common forced start.
