@@ -67,3 +67,24 @@ def test_pipeline():
     print('ALL PIPELINE TESTS PASSED')
 
 if __name__=='__main__': test_pipeline()
+
+
+def test_own_threshold_post_reach_metrics():
+    from environment_temperature_rh_core import own_threshold_statistics, plot_own_threshold_bars
+    stamps=pd.date_range("2026-11-17 09:00",periods=8,freq="1min")
+    data=pd.DataFrame({DATE:stamps,TEMP:[34,35,36.6,37,36.0,38,37,37],
+                       RH:[70,80,83,84,87,90,82,91]})
+    result=own_threshold_statistics({"govee-01":data},temp_threshold=36.5,
+                                     rh_threshold=85.0,method="first")
+    a=result.set_index("Parameter")
+    assert int(a.loc["Temperature","N after threshold"])==6
+    assert int(a.loc["RH","N after threshold"])==4
+    assert a.loc["Temperature","Min"]==36.0
+    assert a.loc["RH","Min"]==82
+    assert a.loc["Temperature","Reached at"]==stamps[2]
+    assert a.loc["RH","Reached at"]==stamps[4]
+    assert len(plot_own_threshold_bars(result,"Temperature").data)==3
+    never=own_threshold_statistics({"govee-01":data},temp_threshold=100,
+                                    rh_threshold=100)
+    assert (never["N after threshold"]==0).all()
+    assert never["Mean"].isna().all()

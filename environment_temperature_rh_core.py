@@ -381,6 +381,74 @@ def summarize(sensors, *, temp_threshold=36.5, rh_threshold=85.0,
     return pd.DataFrame(overview), pd.DataFrame(stages)
 
 
+
+def own_threshold_statistics(sensors, *, temp_threshold=36.5,
+                             rh_threshold=85.0, hold_minutes=10.0,
+                             max_gap_min=5.0, method='first'):
+    """Per-sensor, per-variable raw min/mean/max AFTER its OWN threshold reach.
+
+    'first': start at first observed crossing; 'sustained': start at first
+    qualifying observed run with hold duration and no excessive sample gaps.
+    All subsequent valid observations are included, even later dips below
+    threshold. Never silently remove later excursions. No invented values
+    for an unreached threshold; N=0 with numeric statistics as NaN.
+    """
+    if method not in ('first', 'sustained'):
+        raise ValueError("method must be 'first' or 'sustained'")
+    rows=[]
+    for name, d in sensors.items():
+        if d.empty:
+            continue
+        start=d[DATE].iloc[0]
+        for stage,var,units,threshold in (
+            ('Temperature',TEMP,'°C',temp_threshold),
+            ('RH',RH,'%',rh_threshold)
+        ):
+            key='temp' if stage=='Temperature' else 'rh'
+            if method=='first':
+                reached=first_reach(d,temp_threshold=temp_threshold,
+                                    rh_threshold=rh_threshold,stage=key)
+            else:
+                reached=first_sustained_reach(d,temp_threshold=temp_threshold,
+                                             rh_threshold=rh_threshold,stage=key,
+                                             hold_minutes=hold_minutes,
+                                             max_gap_min=max_gap_min)
+            subset=d.loc[d[DATE].ge(reached),var].dropna() if pd.notna(reached) else pd.Series(dtype=float)
+            rows.append({
+                'Sensor':name,'Parameter':stage,'Units':units,
+                'Threshold':threshold,'Reach rule':method,
+                'Reached at':reached,
+                'Minutes to reach':_minutes_from(start,reached),
+                'N after threshold':int(len(subset)),
+                'Min':subset.min(),'Mean':subset.mean(),'Max':subset.max(),
+                'SD':subset.std(),
+                'Post-reach duration min':(
+                    float((d[DATE].iloc[-1]-reached).total_seconds()/60)
+                    if pd.notna(reached) else np.nan),
+                'Status':'Reached' if pd.notna(reached) else 'Never reached'
+            })
+    return pd.DataFrame(rows,columns=[
+        'Sensor','Parameter','Units','Threshold','Reach rule','Reached at',
+        'Minutes to reach','N after threshold','Min','Mean','Max','SD',
+        'Post-reach duration min','Status'])
+
+
+def plot_own_threshold_bars(stats, parameter='Temperature'):
+    """Bar comparison of observed post-own-threshold Min/Mean/Max by sensor."""
+    if parameter not in ('Temperature','RH'):
+        raise ValueError('parameter must be Temperature or RH')
+    filtered=stats.loc[(stats.Parameter==parameter)&stats['N after threshold'].gt(0)]
+    fig=go.Figure()
+    for metric in ('Min','Mean','Max'):
+        fig.add_bar(x=filtered.Sensor,y=filtered[metric],name=metric,
+                    text=filtered[metric].round(2),textposition='outside')
+    fig.update_layout(template='plotly_white',barmode='group',height=490,
+                      title=f'{parameter}: Min / Mean / Max after OWN threshold',
+                      xaxis_title='Sensor',yaxis_title='°C' if parameter=='Temperature' else '% RH',
+                      legend=dict(orientation='h',y=1.15))
+    return fig
+
+
 def spread_series(sensors, resolution='1min'):
     """Spatial spread across aligned sensor recordings. No interpolation performed."""
     charts = []
