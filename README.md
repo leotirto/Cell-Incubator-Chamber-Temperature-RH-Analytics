@@ -102,3 +102,23 @@ controller directions are not assumed; reference targets are editable examples.
 (raw logged units), all editable in Colab. The **Drop recovery** tab adds
 per-event return/confirmation times, timeline markers, grouped recovery bars,
 and `drop_recovery.csv` in exports. See [interpretation and limitations](CONTROLLER_LOG_ANALYTICS.md#drop-recovery-at-temperature-rh-and-co₂-thresholds).
+
+
+### Interactive time-window recovery comparisons
+
+In the [controller notebook](https://colab.research.google.com/github/leotirto/Cell-Incubator-Chamber-Temperature-RH-Analytics/blob/main/Incubator_Controller_Recovery_Analytics.ipynb), load the controller CSV and open
+**02 Select rows / time**. Enter inclusive `From time` and `To time`
+(`YYYY-MM-DD HH:MM:SS`) or choose **Full time / Last 30 min / Last 60 min**.
+Click **Analyze selected window** and open **Recovery comparison**.
+
+The selected interval is applied consistently to temperature (T Chamber), RH
+and CO₂ (47,000 raw logger units by default). Outputs include:
+- Independent recovery times and per-parameter median recovery differences.
+- Three-channel normalized deficit trends on one interactive time axis.
+- Median recovery bar chart, plus original three-panel threshold/recovery chart.
+- `recovery_comparison.csv` exported alongside the event-level `drop_recovery.csv`.
+
+Only confirmed recoveries with observed drop onset inside the selected window
+are included in median comparisons. An onset already in progress at the window
+boundary is flagged and excluded from timing comparisons. No drops or unrecovered
+episodes are shown as missing, never as zero-duration recovery.
