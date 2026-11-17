@@ -197,3 +197,40 @@ def test_drop_recovery_sustained_hold_and_incomplete_events():
         assert "drop_recovery" in report
         out=export_report(report,Path(td)/"report")
         assert (out/"drop_recovery.csv").exists()
+
+
+def test_time_window_recovery_comparison():
+    from incubator_controller_analytics import (
+        LoadedLog, compare_drop_recovery, plot_recovery_comparison,
+        plot_recovery_summary_bars, detect_drop_recovery
+    )
+    dates = pd.date_range("2026-11-14 12:00:00", periods=90, freq="1s")
+    t=np.full(90,37.0); rh=np.full(90,90.0); co2=np.full(90,49000.0)
+    t[10:18]=35.0                 # 8-second temperature recovery
+    rh[12:27]=80.0                # 15-second RH recovery
+    co2[14:36]=46000.0            # 22-second CO2 recovery
+    d=pd.DataFrame({TIME:dates, "SourceRow":np.arange(2,92),
+                    "T Chamber":t,"RH":rh,"CO2":co2})
+    log=LoadedLog("test.csv",d,{})
+    clipped=select_window(log,start_time=dates[5],end_time=dates[70])
+    assert len(clipped)==66
+    assert clipped[TIME].iloc[0]==dates[5]
+    events=detect_drop_recovery(clipped,hold_s=5,max_gap_seconds=2)
+    comparison=compare_drop_recovery(events)
+    assert list(comparison.Channel)==["T Chamber","RH","CO2"]
+    assert (comparison.Comparable_recoveries==1).all()
+    times=dict(zip(comparison.Channel,comparison.Median_recovery_min))
+    assert np.isclose(times["T Chamber"],8/60)
+    assert np.isclose(times["RH"],15/60)
+    assert np.isclose(times["CO2"],22/60)
+    assert np.isclose(comparison.loc[comparison.Channel.eq("CO2"),
+                       "Slowest_minus_fastest_median_min"].iloc[0],14/60)
+    assert len(plot_recovery_comparison(clipped,events).data)==3
+    assert len(plot_recovery_summary_bars(comparison).data)==1
+    cut_after_drop=select_window(log,start_time=dates[16],end_time=dates[70])
+    censored=compare_drop_recovery(detect_drop_recovery(cut_after_drop,hold_s=5,max_gap_seconds=2))
+    temp=censored[censored.Channel.eq("T Chamber")].iloc[0]
+    assert temp.Left_censored==1 and temp.Comparable_recoveries==0
+    assert np.isnan(temp.Median_recovery_min)
+    no_drops=compare_drop_recovery(detect_drop_recovery(select_window(log,start_time=dates[45]),hold_s=5))
+    assert (no_drops.Drop_episodes==0).all()
