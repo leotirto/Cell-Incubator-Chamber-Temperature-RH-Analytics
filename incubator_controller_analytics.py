@@ -556,6 +556,95 @@ def plot_recovery_bars(events: pd.DataFrame) -> go.Figure:
     return _layout(fig,"Recovery durations by drop episode (confirmed only)",height=520)
 
 
+def compare_drop_recovery(events: pd.DataFrame, *,
+                          channels: Iterable[str] = ("T Chamber", "RH", "CO2")) -> pd.DataFrame:
+    """Compare independent recovery times within the *same selected data window*.
+
+    Recovers are measured from each parameter's own first below-threshold
+    sample. Window-start-censored events are retained but excluded from timing
+    comparisons because their drop onset is not observed.
+    """
+    cols = ["Channel", "Threshold", "Drop_episodes", "Confirmed",
+            "Unconfirmed", "Left_censored", "Comparable_recoveries",
+            "Mean_recovery_min", "Median_recovery_min", "Min_recovery_min",
+            "Max_recovery_min", "Slowest_minus_fastest_median_min", "Status"]
+    rows = []
+    for channel in channels:
+        d = (events.loc[events["Channel"].eq(channel)].copy()
+             if events is not None and not events.empty else pd.DataFrame())
+        comparable = (d.loc[d.Recovered & ~d.Left_censored & d.Recovery_min.notna()]
+                      if not d.empty else pd.DataFrame())
+        rows.append(dict(Channel=channel,
+                         Threshold=float(d.Threshold.iloc[0]) if len(d) else np.nan,
+                         Drop_episodes=len(d),
+                         Confirmed=int(d.Recovered.sum()) if len(d) else 0,
+                         Unconfirmed=int((~d.Recovered).sum()) if len(d) else 0,
+                         Left_censored=int(d.Left_censored.sum()) if len(d) else 0,
+                         Comparable_recoveries=len(comparable),
+                         Mean_recovery_min=float(comparable.Recovery_min.mean()) if len(comparable) else np.nan,
+                         Median_recovery_min=float(comparable.Recovery_min.median()) if len(comparable) else np.nan,
+                         Min_recovery_min=float(comparable.Recovery_min.min()) if len(comparable) else np.nan,
+                         Max_recovery_min=float(comparable.Recovery_min.max()) if len(comparable) else np.nan,
+                         Status=("No drops" if len(d)==0 else
+                                 "No complete comparable recoveries" if len(comparable)==0
+                                 else "Comparable recorded episodes")))
+    result = pd.DataFrame(rows, columns=cols)
+    valid = result["Median_recovery_min"].dropna()
+    if len(valid):
+        result["Slowest_minus_fastest_median_min"] = (
+            result["Median_recovery_min"] - float(valid.min()))
+    return result
+
+
+def plot_recovery_comparison(df: pd.DataFrame, events: pd.DataFrame,
+                             thresholds: Mapping[str, float] | None = None) -> go.Figure:
+    """One interactive Plotly chart with a shared time axis and comparable deficit scale.
+
+    Each curve shows its *fraction of maximum observed below-threshold
+    deficit* in the current window; 0 means no deficit. This is NOT an
+    absolute measure of environmental severity between different units.
+    """
+    thresholds = dict(thresholds or {"T Chamber": 36.5, "RH": 85, "CO2": 47000})
+    fig = go.Figure()
+    if df.empty:
+        return _layout(fig, "Selected-window recovery comparison", height=540)
+    start = df[TIME].min()
+    x = (df[TIME] - start).dt.total_seconds() / 60.0
+    for channel in ("T Chamber", "RH", "CO2"):
+        if channel not in df or channel not in thresholds:
+            continue
+        v = pd.to_numeric(df[channel], errors="coerce")
+        deficit = (float(thresholds[channel]) - v).clip(lower=0)
+        maximum = deficit.max()
+        fraction = (deficit / maximum) if pd.notna(maximum) and maximum > 0 else deficit * 0
+        fig.add_trace(go.Scatter(x=x,y=fraction,name=channel,mode="lines",
+                                 connectgaps=False,
+                                 customdata=v,
+                                 hovertemplate=(f"{channel}<br>Elapsed: %{{x:.2f}} min"
+                                                "<br>Normalized deficit: %{y:.2%}"
+                                                "<br>Measured: %{customdata:.4g}<extra></extra>"),
+                                 line=dict(width=2,color=COLOURS.get(channel))))
+    fig.update_yaxes(title_text="Below-threshold deficit / window maximum",tickformat=".0%",range=[-0.03,1.06])
+    fig.update_xaxes(title_text="Elapsed minutes from selected window start")
+    return _layout(fig, "Temperature / RH / CO2 — normalized deficits in selected time window",height=560)
+
+
+def plot_recovery_summary_bars(summary: pd.DataFrame) -> go.Figure:
+    """Comparable median recovery by parameter, excluding left-censored events."""
+    fig=go.Figure()
+    if not summary.empty:
+        valid=summary.loc[summary.Comparable_recoveries.gt(0)].copy()
+        fig.add_bar(x=valid.Channel,y=valid.Median_recovery_min,
+                    marker_color=[COLOURS.get(c,"#64748b") for c in valid.Channel],
+                    text=valid.Median_recovery_min.round(2),
+                    textposition="outside",
+                    customdata=valid.Comparable_recoveries,
+                    hovertemplate="%{x}<br>Median recovery: %{y:.2f} min"
+                                  "<br>Recovered episodes: %{customdata}<extra></extra>")
+    fig.update_yaxes(title_text="Median observed recovery time (minutes)")
+    return _layout(fig,"Independent recovery comparison — selected time window",height=500)
+
+
 def lag_correlation(df: pd.DataFrame, *, measurement: str = "RH", controller: str = "Ctrl RH",
                     bin_seconds: int = 10, max_lag_seconds: int = 300,
                     min_overlaps: int = 15) -> pd.DataFrame:
@@ -790,7 +879,8 @@ def build_report(log: LoadedLog, *, start_row: int | None = None, end_row: int |
     drops = detect_drop_recovery(clean, thresholds={"T Chamber": temp_threshold,
                                  "RH": rh_threshold, "CO2": co2_threshold},
                                  hold_s=hold_seconds, max_gap_seconds=max_gap_seconds)
-    return {"source": log.name, "data": clean, "quality": log.quality, "stats": summary,
+    recovery_comparison = compare_drop_recovery(drops)
+    return {"source": log.name, "recovery_comparison": recovery_comparison, "data": clean, "quality": log.quality, "stats": summary,
             "controllers": controls, "threshold": pd.DataFrame([threshold]), "events": events,
             "drop_recovery": drops,
             "targets": targets,
@@ -809,7 +899,8 @@ def export_report(report: dict, dest: str | Path, *, charts: Mapping[str, go.Fig
     dest.mkdir(parents=True, exist_ok=True)
     for label, key in [("processed_readings", "data"), ("statistics", "stats"),
                        ("pid_statistics", "controllers"), ("threshold_reach", "threshold"),
-                       ("excursions", "events"), ("drop_recovery", "drop_recovery")]:
+                       ("excursions", "events"), ("drop_recovery", "drop_recovery"),
+                       ("recovery_comparison", "recovery_comparison")]:
         report[key].to_csv(dest / f"{label}.csv", index=False)
     (dest / "quality_report.json").write_text(
         pd.Series({"source": report["source"], "quality": report["quality"],
