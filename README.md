@@ -132,6 +132,7 @@ Analyze raw 3-axis accelerometer recordings including tab-delimited files with `
 
 - [Open interactive vibration notebook in Colab](https://colab.research.google.com/github/leotirto/Cell-Incubator-Chamber-Temperature-RH-Analytics/blob/main/vibration_analysis/VSE16g_Vibration_Labware_Analytics.ipynb)
 - **Upload workflow:** run the notebook and choose the VSE recording and optional labware TXT in the Colab file picker. No path entry or Drive mount required.
+- **Frequency analysis:** the notebook now includes adjustable minimum spectral prominence, minimum tonal RMS and merging tolerance; view the **Frequency inventory**, **Frequency occurrence**, and **Band energy** tabs for peak counts, occupancy and energy distribution.
 - [Read methodology, physics caveats, and CLI instructions](vibration_analysis/README.md)
 - Python engine: `vibration_analysis/vse_vibration_core.py`
 - Synthetic tests: `vibration_analysis/tests/test_vse_vibration.py`
