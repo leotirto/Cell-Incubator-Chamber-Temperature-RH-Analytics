@@ -131,6 +131,7 @@ episodes are shown as missing, never as zero-duration recovery.
 Analyze raw 3-axis accelerometer recordings including tab-delimited files with `.xls` extension, with interactive time cropping, RMS/shock timelines, Welch PSD, FFT, spectrogram, modal reference comparisons, and short-time exposure. The supplied labware frequency/amplitude model and real logger measurements are intentionally **not** committed to this public repository.
 
 - [Open interactive vibration notebook in Colab](https://colab.research.google.com/github/leotirto/Cell-Incubator-Chamber-Temperature-RH-Analytics/blob/main/vibration_analysis/VSE16g_Vibration_Labware_Analytics.ipynb)
+- **Upload workflow:** run the notebook and choose the VSE recording and optional labware TXT in the Colab file picker. No path entry or Drive mount required.
 - [Read methodology, physics caveats, and CLI instructions](vibration_analysis/README.md)
 - Python engine: `vibration_analysis/vse_vibration_core.py`
 - Synthetic tests: `vibration_analysis/tests/test_vse_vibration.py`
