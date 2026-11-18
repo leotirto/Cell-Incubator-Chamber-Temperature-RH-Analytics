@@ -604,6 +604,258 @@ def plot_raw_waveform(result:dict,axis:str='Vector',duration_s:float=2,offset_s:
     fig.update_yaxes(title_text='Raw acceleration incl. gravity (m/s²)')
     return _layout(fig,'Raw acceleration waveform — static gravity remains',height=480)
 
+
+
+def frequency_inventory(spectrum:pd.DataFrame,*,fmin:float=1.,fmax:float=300.,
+                        min_prominence_db:float=6.,min_tonal_rms_m_s2:float=.003,
+                        merge_tolerance_hz:float=1.,integration_halfwidth_hz:float=.5)->pd.DataFrame:
+    """Find *distinct significant groups* of vector-PSD peaks, not every FFT bin.
+
+    Local spectral excess in dB = 10log10(PSD/median-filtered PSD floor).
+    Grouping is single-linkage on adjacent significant peak-frequency separation.
+    RMS is the integrated positive PSD EXCESS within the member-peak envelope
+    plus a configurable margin, not amplitude at the fluid or calibrated tone.
+    The prominence is a local-background contrast, not strict peak prominence.
+    """
+    cols=['Group_ID','Peak_Hz','Frequency_min_Hz','Frequency_max_Hz',
+          'Peaks_merged','Prominence_dB','Tonal_RMS_m_s2','Band_RMS_m_s2',
+          'PSD_peak_(m_s2)^2_Hz','Integration_from_Hz','Integration_to_Hz']
+    if not (np.isfinite(fmin) and np.isfinite(fmax) and 0<=fmin<fmax):
+        raise ValueError('Set finite fmin < fmax, with fmin >= 0')
+    if not np.isfinite(min_prominence_db) or min_prominence_db<0:
+        raise ValueError('Minimum prominence must be >= 0 dB')
+    if not np.isfinite(min_tonal_rms_m_s2) or min_tonal_rms_m_s2<0:
+        raise ValueError('Minimum tonal RMS must be nonnegative')
+    if not np.isfinite(merge_tolerance_hz) or merge_tolerance_hz<=0:
+        raise ValueError('Merge tolerance must be positive')
+    if not np.isfinite(integration_halfwidth_hz) or integration_halfwidth_hz<=0:
+        raise ValueError('Integration halfwidth must be positive')
+    if len(spectrum)<5:return pd.DataFrame(columns=cols)
+    f=spectrum.Frequency_Hz.to_numpy(dtype=float)
+    p=spectrum.PSD_Vector.to_numpy(dtype=float)
+    df=float(np.median(np.diff(f)))
+    if df<=0 or not np.isfinite(df) or not np.all(np.diff(f)>0):
+        raise ValueError('PSD frequency bins must increase strictly')
+    p=np.maximum(p,0.)
+    filter_bins=max(9,int(np.ceil(5/df)))
+    if filter_bins%2==0:filter_bins+=1
+    baseline=ndimage.median_filter(p,size=filter_bins,mode='nearest')
+    db=10*np.log10(np.maximum(p,1e-25)/np.maximum(baseline,1e-25))
+    candidates,_=signal.find_peaks(db,height=min_prominence_db,
+            distance=max(1,int(round(.2/df))))
+    candidates=candidates[(f[candidates]>=fmin)&(f[candidates]<=min(fmax,f[-1]))]
+    if not len(candidates):return pd.DataFrame(columns=cols)
+    grouped=[];current=[int(candidates[0])]
+    for ix in candidates[1:]:
+        ix=int(ix)
+        if f[ix]-f[current[-1]]<=merge_tolerance_hz+1e-12:
+            current.append(ix)
+        else:
+            grouped.append(current);current=[ix]
+    grouped.append(current)
+    found=[]
+    for group in grouped:
+        half=max(integration_halfwidth_hz,df)
+        lo=max(float(f[0]),float(f[group[0]]-half))
+        hi=min(float(f[-1]),float(f[group[-1]]+half))
+        mask=(f>=lo)&(f<=hi)
+        band=float(np.sqrt(np.sum(p[mask])*df))
+        tonal=float(np.sqrt(np.sum(np.maximum(p[mask]-baseline[mask],0))*df))
+        if tonal<min_tonal_rms_m_s2:continue
+        strongest=max(group,key=lambda ix:p[ix])
+        found.append(dict(Peak_Hz=float(f[strongest]),
+             Frequency_min_Hz=float(f[group[0]]),Frequency_max_Hz=float(f[group[-1]]),
+             Peaks_merged=len(group),Prominence_dB=float(np.max(db[group])),
+             Tonal_RMS_m_s2=tonal,Band_RMS_m_s2=band,
+             **{'PSD_peak_(m_s2)^2_Hz':float(p[strongest])},
+             Integration_from_Hz=lo,Integration_to_Hz=hi))
+    for i,row in enumerate(found,1):row['Group_ID']=f'F{i:03d}'
+    return pd.DataFrame(found,columns=cols)
+
+
+def frequency_occurrence(d:pd.DataFrame,fs:float,inventory:pd.DataFrame,*,
+                         window_s:float=10.24,overlap_fraction:float=.5,
+                         min_prominence_db:float=6.,min_tonal_rms_m_s2:float=.003)->pd.DataFrame:
+    """Time-localized significant frequency-group detection on overlapping STFT bins.
+
+    Uses the *longest uninterrupted* segment (like Welch), never bridges gaps.
+    Detected when BOTH local PSD excess and tonal-excess band RMS thresholds
+    are met within a time window. A positive window is not proof the tone was
+    present continuously throughout that window. Activity is a SCREENING metric.
+    """
+    cols=['Time_start','Time','Time_end','Elapsed_s','Group_ID','Peak_Hz',
+          'Band_tonal_RMS_m_s2','Local_contrast_dB','Detected','Window_s','Step_s']
+    if inventory.empty:return pd.DataFrame(columns=cols)
+    if not np.isfinite(fs) or fs<=0 or not np.isfinite(window_s) or window_s<=0:
+        raise ValueError('Sampling rate and time-window seconds must be positive')
+    if not (0<=overlap_fraction<1):raise ValueError('Overlap fraction must be in [0, 1)')
+    if min_prominence_db<0 or min_tonal_rms_m_s2<0:
+        raise ValueError('Detection thresholds must be nonnegative')
+    raw,qa=_dominant_segment(d,fs)
+    n=min(len(raw),max(64,int(round(fs*window_s))))
+    if n<64:return pd.DataFrame(columns=cols)
+    noverlap=min(n-1,int(round(n*overlap_fraction)))
+    power=None
+    for i in range(3):
+        f,t,axis_power=signal.spectrogram(raw[:,i]*G0,fs=fs,window='hann',
+                        nperseg=n,noverlap=noverlap,detrend='constant',
+                        scaling='density',mode='psd')
+        if power is None:power=axis_power
+        else:power+=axis_power
+    df=float(f[1]-f[0]);start=pd.Timestamp(qa['segment_start'])
+    actual_window=n/fs;step=(n-noverlap)/fs
+    times=start+pd.to_timedelta(t,unit='s')
+    beginnings=times-pd.to_timedelta(actual_window/2,unit='s')
+    endings=times+pd.to_timedelta(actual_window/2,unit='s')
+    elapsed=(times-d.Time.iloc[0]).total_seconds().to_numpy()
+    result=[]
+    for row in inventory.itertuples(index=False):
+        lo=float(row.Integration_from_Hz)
+        hi=float(row.Integration_to_Hz)
+        mask=(f>=lo)&(f<=hi)
+        if not mask.any():continue
+        span=max(5.,3.*(hi-lo))
+        neighborhood=(f>=float(row.Peak_Hz)-span)&(f<=float(row.Peak_Hz)+span)&(~mask)
+        if neighborhood.sum()>=3:
+            local_floor=np.median(power[neighborhood,:],axis=0)
+        else:
+            local_floor=np.median(power[f>=max(1.,df),:],axis=0)
+        local_floor=np.maximum(local_floor,1e-25)
+        sub=power[mask,:]
+        tonal=np.sqrt(np.sum(np.maximum(sub-local_floor[None,:],0),axis=0)*df)
+        prominence=10*np.log10(np.maximum(np.max(sub,axis=0),1e-25)/local_floor)
+        detected=(tonal>=min_tonal_rms_m_s2)&(prominence>=min_prominence_db)
+        result.append(pd.DataFrame({'Time_start':beginnings,'Time':times,'Time_end':endings,
+            'Elapsed_s':elapsed,'Group_ID':row.Group_ID,'Peak_Hz':float(row.Peak_Hz),
+            'Band_tonal_RMS_m_s2':tonal,'Local_contrast_dB':prominence,
+            'Detected':detected,'Window_s':actual_window,'Step_s':step}))
+    return pd.concat(result,ignore_index=True) if result else pd.DataFrame(columns=cols)
+
+
+def frequency_occurrence_summary(occurrence:pd.DataFrame,inventory:pd.DataFrame)->pd.DataFrame:
+    """Occupancy as *percentage of overlapping windows*, not biological exposure."""
+    cols=['Group_ID','Peak_Hz','Analyzed_windows','Detected_windows',
+          'Window_occupancy_pct','Longest_detected_run_windows',
+          'Approx_longest_flagged_span_s','First_detected','Last_detected']
+    if inventory.empty:return pd.DataFrame(columns=cols)
+    summaries=[]
+    for row in inventory.itertuples(index=False):
+        d=occurrence.loc[occurrence.Group_ID.eq(row.Group_ID)].sort_values('Time')
+        flags=d.Detected.to_numpy(dtype=bool)
+        count=int(flags.sum())
+        longest=0;run=0
+        for flag in flags:
+            run=run+1 if flag else 0
+            longest=max(longest,run)
+        window=float(d.Window_s.iloc[0]) if len(d) else np.nan
+        step=float(d.Step_s.iloc[0]) if len(d) else np.nan
+        positives=d.loc[d.Detected]
+        summaries.append({'Group_ID':row.Group_ID,'Peak_Hz':float(row.Peak_Hz),
+           'Analyzed_windows':len(d),'Detected_windows':count,
+           'Window_occupancy_pct':100*count/len(d) if len(d) else np.nan,
+           'Longest_detected_run_windows':longest,
+           'Approx_longest_flagged_span_s':window+(longest-1)*step if longest else 0.,
+           'First_detected':positives.Time.iloc[0] if count else pd.NaT,
+           'Last_detected':positives.Time.iloc[-1] if count else pd.NaT})
+    return pd.DataFrame(summaries,columns=cols)
+
+
+def frequency_band_distribution(spectrum:pd.DataFrame,*,
+                                edges:tuple[float,...]=(0,10,50,100,200,300,400))->pd.DataFrame:
+    """Integrate PSD variance per nonoverlapping band; report RSS RMS and share.
+
+    Band shares are fractions of measured acceleration VARIANCE, not numbers
+    of tones. Fractions are normalized across the displayed finite bands.
+    """
+    cols=['Band','Start_Hz','End_Hz','RMS_X_m_s2','RMS_Y_m_s2',
+          'RMS_Z_m_s2','RMS_Vector_m_s2','Vector_variance_m2_s4',
+          'Variance_share_pct']
+    if len(spectrum)<2:return pd.DataFrame(columns=cols)
+    f=spectrum.Frequency_Hz.to_numpy(dtype=float)
+    df=float(np.median(np.diff(f)))
+    if not np.isfinite(df) or df<=0:raise ValueError('Invalid spectrum grid')
+    nyquist=float(f[-1]);chosen=[float(x) for x in edges]
+    if any(not np.isfinite(x) for x in chosen) or sorted(chosen)!=chosen or len(set(chosen))!=len(chosen):
+        raise ValueError('Frequency band edges must be distinct increasing finite numbers')
+    if len(chosen)<2 or chosen[0]<0:raise ValueError('Band edges require at least two values >= 0')
+    if chosen[0]>nyquist:return pd.DataFrame(columns=cols)
+    chosen=[x for x in chosen if x<nyquist]+[nyquist]
+    if len(chosen)<2:return pd.DataFrame(columns=cols)
+    rows=[]
+    for j,(low,high) in enumerate(zip(chosen[:-1],chosen[1:])):
+        mask=(f>=low)&((f<=high) if j==len(chosen)-2 else (f<high))
+        energies=[max(0.,float(np.sum(spectrum['PSD_'+ax].to_numpy()[mask])*df))
+                  for ax in ('X','Y','Z')]
+        total=sum(energies)
+        rows.append(dict(Band=f'{low:g}–{high:g} Hz',Start_Hz=low,End_Hz=high,
+            RMS_X_m_s2=float(np.sqrt(energies[0])),RMS_Y_m_s2=float(np.sqrt(energies[1])),
+            RMS_Z_m_s2=float(np.sqrt(energies[2])),RMS_Vector_m_s2=float(np.sqrt(total)),
+            Vector_variance_m2_s4=total))
+    variance=sum(r['Vector_variance_m2_s4'] for r in rows)
+    for row in rows:row['Variance_share_pct']=100*row['Vector_variance_m2_s4']/variance if variance>0 else 0.
+    return pd.DataFrame(rows,columns=cols)
+
+
+def plot_frequency_inventory(inventory:pd.DataFrame,*,top:int=25)->go.Figure:
+    fig=go.Figure()
+    if not inventory.empty:
+        d=inventory.nlargest(int(top),'Tonal_RMS_m_s2').iloc[::-1]
+        fig.add_bar(x=d.Tonal_RMS_m_s2,y=d.Peak_Hz.map(lambda x:f'{x:.2f} Hz'),
+            orientation='h',marker_color='#0d9488',text=d.Tonal_RMS_m_s2.map(lambda x:f'{x:.4f}'),
+            textposition='outside',customdata=np.stack([d.Prominence_dB,d.Peaks_merged],axis=1),
+            hovertemplate='Peak: %{y}<br>Approx tonal RMS: %{x:.5f} m/s²<br>Local excess: %{customdata[0]:.1f} dB<br>Member peaks: %{customdata[1]:.0f}<extra></extra>')
+    else:fig.add_annotation(text='No frequency groups meet the current thresholds',showarrow=False)
+    fig.update_xaxes(title_text='Approximate tonal-excess band RMS at sensor (m/s²)')
+    fig.update_yaxes(title_text='Distinct group peak frequency (Hz)')
+    return _layout(fig,'Significant frequency groups — ranked by estimated tonal RMS',height=680)
+
+
+def plot_frequency_occurrence(occurrence:pd.DataFrame,inventory:pd.DataFrame,*,top:int=24)->go.Figure:
+    fig=go.Figure()
+    if occurrence.empty or inventory.empty:
+        fig.add_annotation(text='No detected frequency groups in this window',showarrow=False)
+        return _layout(fig,'Frequency occurrence — time-window detections',height=590)
+    groups=inventory.nlargest(int(top),'Tonal_RMS_m_s2')
+    chosen=occurrence[occurrence.Group_ID.isin(groups.Group_ID)]
+    order=groups.Group_ID.tolist()[::-1]
+    z=chosen.pivot(index='Group_ID',columns='Time',values='Detected').reindex(order)
+    intensity=chosen.pivot(index='Group_ID',columns='Time',values='Band_tonal_RMS_m_s2').reindex(order)
+    contrast=chosen.pivot(index='Group_ID',columns='Time',values='Local_contrast_dB').reindex(order)
+    peaks=dict(zip(inventory.Group_ID,inventory.Peak_Hz))
+    labels=[f'{peaks[key]:.2f} Hz ({key})' for key in order]
+    custom=np.stack([intensity.to_numpy(dtype=float),contrast.to_numpy(dtype=float)],axis=-1)
+    fig.add_heatmap(x=z.columns,y=labels,z=z.to_numpy(dtype=float),customdata=custom,
+         zmin=0,zmax=1,colorscale=[[0,'#e2e8f0'],[.499,'#e2e8f0'],[.5,'#0d9488'],[1,'#0d9488']],
+         colorbar=dict(title='Detected',tickvals=[0,1],ticktext=['No','Yes']),
+         hovertemplate='%{y}<br>%{x}<br>Detected: %{z:.0f}<br>Tonal RMS: %{customdata[0]:.5f} m/s²<br>Local excess: %{customdata[1]:.1f} dB<extra></extra>')
+    fig.update_xaxes(title_text='Logger time — overlapping FFT window centers')
+    fig.update_yaxes(title_text='Distinct frequency groups')
+    return _layout(fig,'Frequency occurrence heatmap — both thresholds must be met',height=max(440,130+22*len(labels)))
+
+
+def plot_frequency_band_distribution(bands:pd.DataFrame)->go.Figure:
+    fig=go.Figure()
+    if not bands.empty:
+        fig.add_bar(x=bands.Band,y=bands.RMS_Vector_m_s2,
+             text=bands.Variance_share_pct.map(lambda x:f'{x:.1f}% energy'),
+             textposition='outside',marker_color='#2563eb',
+             customdata=bands.Variance_share_pct,
+             hovertemplate='Band: %{x}<br>Vector RMS: %{y:.5f} m/s²<br>Variance share: %{customdata:.2f}%<extra></extra>')
+    fig.update_xaxes(title_text='Nonoverlapping frequency band')
+    fig.update_yaxes(title_text='Integrated vector RMS acceleration (m/s²)')
+    return _layout(fig,'Frequency-band distribution — measured acceleration variance',height=520)
+
+
+def plot_active_frequency_count(occurrence:pd.DataFrame)->go.Figure:
+    fig=go.Figure()
+    if not occurrence.empty:
+        count=occurrence.groupby('Time',sort=True)['Detected'].sum().astype(int)
+        fig.add_trace(go.Scattergl(x=count.index,y=count.to_numpy(),
+              mode='lines',name='Simultaneously detected groups',line=dict(color='#8b5cf6',width=1.8)))
+    fig.update_xaxes(title_text='Logger time — overlapping FFT window centers')
+    fig.update_yaxes(title_text='Distinct frequency groups detected per window',rangemode='tozero')
+    return _layout(fig,'How many significant frequency groups are active over time?',height=460)
+
 def export_report(result:dict,destination:str|Path,*,figures:Mapping[str,go.Figure]|None=None)->Path:
     dest=Path(destination);dest.mkdir(parents=True,exist_ok=True)
     for label,key in [('rms_time_bins','time_metrics'),('five_minute_summary','time_sections'),
@@ -613,6 +865,11 @@ def export_report(result:dict,destination:str|Path,*,figures:Mapping[str,go.Figu
     if 'modal_exposure' in result and result['modal_exposure'] is not None:
         result['modal_exposure'].to_csv(dest/'modal_exposure_time.csv',index=False)
         modal_time_summary(result['modal_exposure']).to_csv(dest/'modal_exposure_summary.csv',index=False)
+    # Frequency inventory outputs are optional to preserve old callers/CLI.
+    for key in ('frequency_inventory','frequency_occurrence',
+                'frequency_occurrence_summary','frequency_band_distribution'):
+        if key in result and result[key] is not None:
+            result[key].to_csv(dest/f'{key}.csv',index=False)
     qa=result['quality'].copy();qa['settings']=result['settings'];qa['source_urls']=SOURCE_URLS
     (dest/'quality_and_limitations.json').write_text(json.dumps(qa,indent=2,default=str),encoding='utf-8')
     for label,fig in (figures or {}).items():
