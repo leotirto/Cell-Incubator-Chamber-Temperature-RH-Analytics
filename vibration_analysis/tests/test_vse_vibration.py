@@ -109,3 +109,34 @@ def test_unmeasurable_mode(tmp_path):
                            Threshold_m_s2=.002)])
     screen=labware_screen(spectrum,ref)
     assert screen.Status.iloc[0]=='Outside measurable spectrum'
+
+def test_colab_notebook_uses_native_choose_files_not_typed_paths():
+    """The source picker is a standalone cell, not an ipywidgets callback."""
+    import ast
+    import json
+    notebook = Path(__file__).resolve().parents[1] / "VSE16g_Vibration_Labware_Analytics.ipynb"
+    content = json.loads(notebook.read_text(encoding="utf-8"))
+    assert content["nbformat"] == 4
+    cells = content["cells"]
+    source = [("".join(c["source"])) for c in cells]
+    upload_indexes = [i for i, s in enumerate(source) if "uploaded = files.upload()" in s]
+    assert len(upload_indexes) == 1
+    uploader = source[upload_indexes[0]]
+    assert "from google.colab import files" in uploader
+    assert "VSE_RAW_PATH" in uploader and "VSE_REF_PATH" in uploader
+    assert "'.xls'" in uploader and "'.xlsx'" in uploader and "'.csv'" in uploader
+    assert "'.txt'" in uploader
+    assert "UPLOAD_NOW = False" not in "\n".join(source)
+    dashboard_index = next(i for i, s in enumerate(source) if "source_panel=w.VBox" in s)
+    handler_index = next(i for i, s in enumerate(source) if "load_button.on_click(_load)" in s)
+    assert upload_indexes[0] < dashboard_index < handler_index
+    assert "if raw_file.value and Path(raw_file.value).is_file():" in source[handler_index]
+    assert "    _load()" in source[handler_index]
+    dashboard = source[dashboard_index]
+    assert "raw_file_status" in dashboard and "ref_file_status" in dashboard
+    assert "raw_file,ref_file" not in dashboard.split("source_panel=w.VBox", 1)[1].split("time_panel=", 1)[0]
+    for cell in cells:
+        if cell["cell_type"] == "code":
+            code = "".join(cell["source"])
+            if not code.lstrip().startswith("%"):
+                ast.parse(code)
