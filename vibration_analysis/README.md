@@ -8,12 +8,14 @@ A *separate module* inside the Cell Incubator Chamber Temperature/RH Analytics r
 
 [Open VSE vibration analytics in Google Colab](https://colab.research.google.com/github/leotirto/Cell-Incubator-Chamber-Temperature-RH-Analytics/blob/main/vibration_analysis/VSE16g_Vibration_Labware_Analytics.ipynb)
 
-1. In Colab choose **Runtime → Run all** to install packages, display the dashboard and enable button callbacks. Importantly, the native Upload cell is disabled by default to avoid unexpected dialogs.
-2. Use a private mounted Google Drive path for **Raw VSE file** and **Labware TXT**, then click **Load recording + reference**. If you prefer upload, set `UPLOAD_NOW = True` and run the **optional upload cell** directly, then load. Do not commit either raw experimental file to GitHub.
+1. Open the notebook in Google Colab and select **Runtime → Run all**. After installing packages, the native **Choose files** dialog opens automatically.
+2. Select the VSE recording (`.xls`, `.xlsx` or `.csv`) and optionally **Frequency Affect to Cell Pattern.txt** in the **same chooser**. When the upload finishes, the dashboard displays their names and **loads the raw recording automatically**. No Google Drive mount or typed file path is necessary. To replace inputs, rerun the upload code cell above the dashboard. Keep your experimental inputs private; do not commit them to public GitHub.
 3. **TIME WINDOW — always visible:** set either timestamp From/To (device-local), elapsed start/end seconds (zero = unused), or original sample indexes (zero = unused). Filters intersect if more than one method is set. Presets: Full recording, Skip first 5 minutes, First 5 minutes, Last 10 minutes.
 4. Adjust Welch window/resolution, analysis axis, min/max Hz, time-bin length, modal band tolerance, and selected labware. Click **Analyze selected window**.
 5. Inspect **Overview & QA, Vibration vs time, Welch PSD + FFT, Time-frequency heatmap, Labware modes, Time exposure**. Export the processed CSV and Plotly HTML charts to ZIP using the Export button.
-6. If widget callbacks fail, use **RUN_DIRECT_ANALYSIS = True** in the direct-analysis fallback cell. The code reads the same input and time-window controls.
+6. If widget callbacks fail, use **RUN_DIRECT_ANALYSIS = True** in the direct-analysis fallback cell. It uses the uploaded file selections and time-window controls, with no manual path entry.
+
+**Uploading a large file:** A VSE recording may be more than 150 MB. Let Colab finish transferring it before analyzing. The files are stored in the temporary Colab session at `/content/vse_private_uploads`, which is cleared if the runtime resets. Re-upload files to restore the analysis. A reference TXT is optional but required for the labware-mode screening charts.
 
 The interactive plots include individual XYZ / RSS acceleration RMS trends, shock peak timelines, 5-minute bar comparisons, a short raw waveform, Welch PSD, a representative FFT amplitude spectrum, the spectrogram heatmap, prominent spectral peaks, labware-mode screening ranks, and short-time modal ratio occupancy.
 
