@@ -91,3 +91,74 @@ Only analysis code, **synthetic tests**, and docs should be public. Keep raw VSE
 - [Vibration Sentry E-series manual (sampling / anti-aliasing)](https://www.eruido.org/eruidoorgwww/assets/files/vibration_sentry_e_usersmanual.pdf)
 - [Thermo Fisher: Vibration patterns in cell culture vessels](https://documents.thermofisher.com/TFS-Assets/BID/Technical-Notes/vibration-patterns-cell-culture-vessels-technical-note.pdf)
 - [Review: The waves that make the pattern (acoustic manipulation)](https://pmc.ncbi.nlm.nih.gov/articles/PMC8094912/)
+
+
+## Dynamic frequency inventory, occurrence and frequency-band distribution
+
+The original Welch PSD and spectrogram remain available. Four additional interactive
+views are provided in three tabs:
+
+| Tab | Graph / metric | What it actually means |
+|---|---|---|
+| **Frequency inventory** | Significant frequency groups ranked by approximate tonal-excess RMS (m/s²) | One group may contain several nearby significant PSD peaks |
+| **Frequency occurrence** | Time × frequency group **binary detection heatmap** | A colored cell meets both detection thresholds in that overlapping FFT window |
+| **Frequency occurrence** | Number of simultaneously detected frequency groups vs time | Number of qualifying groups in each analyzed window, not number of hardware sources |
+| **Band energy** | Integrated vector RMS acceleration by frequency band | Bar label shows the fraction of **variance** represented by that band, not fraction of detected tones |
+
+### User-adjustable frequency detection
+
+- **Minimum prominence (dB)** — 6 dB initially: at every candidate peak, compare
+  vector PSD to a median-filtered local PSD background (~5 Hz smoothing width).
+  This is a local-background excess, not a formal hypothesis-test p-value.
+- **Minimum tonal RMS (m/s²)** — 0.003 m/s² initially: approximate band-limited
+  PSD energy *above the local background* is integrated and square-rooted.
+  This value is sensor-level RMS, not the labware fluid acceleration.
+- **Peak-merging tolerance (Hz)** — 1 Hz initially: candidate PSD peaks separated
+  by at most this amount are joined using consecutive-neighbor (single-linkage)
+  grouping. Increase the tolerance to combine closely spaced frequency lines,
+  or decrease it to split them. A cluster does not necessarily identify one
+  physical excitation source.
+- **Occurrence FFT window** — 10.24 s initially, 50% overlap. Available choices
+  include **1 s, 2.56 s, 5.12 s, 10.24 s and 20.48 s**. A 1-second window at
+  800 Hz has ~1 Hz frequency resolution and **cannot** resolve closely spaced
+  tones as well as longer windows. A flag in a 1-second window does not prove
+  continuous excitation for the whole second.
+- **Top groups** — limits only the *display*, not the significant-group count.
+- **Energy band edges** — comma-separated boundaries, initially
+  `0,10,50,100,200,300,400`, clipped to the recording's Nyquist frequency.
+
+The inventory is derived from the Welch PSD of the **currently selected time
+range**. Time occupancy is measured by short-time, 50%-overlapping, Hann-windowed
+vector PSD. Each group is detected only if its time-window local spectral excess
+is at least the selected prominence **and** its approximate time-window
+tonal-excess RMS meets the amplitude cutoff.
+
+**Window_occupancy_pct = 100 × detected FFT windows / analyzed FFT windows.**
+The estimated longest flagged span is based on neighboring overlapping window
+centers and is **not** a precise continuous-excitation duration. Only the
+longest uninterrupted timestamp segment is used for spectral processing;
+the Overview & QA tab reports how much of the selected window was covered.
+The charts must not claim cell-pattern formation, source identification, or
+regulatory pass/fail based on these thresholds.
+
+The band-energy chart integrates vector PSD
+`S_vector(f) = S_X(f)+S_Y(f)+S_Z(f)` within **nonoverlapping frequency bands**.
+The variance share is
+`100 × integrated vector PSD in band / integrated PSD across displayed bands`.
+A 50% share means half the *measured acceleration variance* is in that band;
+it does not mean 50% of vibration events occur there.
+
+### New exported CSVs
+
+- `frequency_inventory.csv` — all significant distinct groups, peak frequencies,
+  approximate tonal RMS, prominence and number of merged peaks
+- `frequency_occurrence.csv` — detected/not detected, FFT time windows,
+  local spectral contrast and band RMS for every group
+- `frequency_occurrence_summary.csv` — percentage of overlapping windows flagged
+  and longest consecutive-run estimate
+- `frequency_band_distribution.csv` — per-band XYZ/vector RMS and vector
+  acceleration-variance share
+
+Time filters and frequency thresholds are independent user inputs. Changing any
+of them and clicking **Analyze selected window** recomputes all frequency views.
+Raw data and the private labware reference are never committed to the repository.
