@@ -140,3 +140,100 @@ def test_colab_notebook_uses_native_choose_files_not_typed_paths():
             code = "".join(cell["source"])
             if not code.lstrip().startswith("%"):
                 ast.parse(code)
+
+
+from vse_vibration_core import (
+    frequency_inventory, frequency_occurrence, frequency_occurrence_summary,
+    frequency_band_distribution, plot_frequency_inventory,
+    plot_frequency_occurrence, plot_frequency_band_distribution,
+    plot_active_frequency_count,
+)
+
+
+def test_frequency_groups_and_energy_distribution(tmp_path):
+    p=tmp_path/'two_sines.xls'
+    synthetic_export(p,duration_s=30,fs=400)
+    log=read_vse(p)
+    report=analyze(log,welch_s=10.24,fmin=1,fmax=150)
+    inv=frequency_inventory(report['spectrum'],fmin=1,fmax=150,
+                            min_prominence_db=6,min_tonal_rms_m_s2=.004,
+                            merge_tolerance_hz=1.)
+    assert inv.Group_ID.is_unique
+    assert (inv.Peaks_merged>=1).all()
+    assert (inv.Tonal_RMS_m_s2>=.004).all()
+    assert any(abs(inv.Peak_Hz-40)<.4)
+    assert any(abs(inv.Peak_Hz-80)<.4)
+    assert len(plot_frequency_inventory(inv).data)==1
+    none=frequency_inventory(report['spectrum'],min_tonal_rms_m_s2=100)
+    assert none.empty
+    assert len(plot_frequency_inventory(none).layout.annotations)==1
+    bands=frequency_band_distribution(report['spectrum'],edges=(0,10,50,100,200))
+    assert len(bands)==4
+    assert np.isclose(bands.Variance_share_pct.sum(),100,atol=1e-6)
+    reconstructed=np.sqrt(bands.Vector_variance_m2_s4.sum())
+    f=report['spectrum'].Frequency_Hz.to_numpy()
+    df=f[1]-f[0]
+    direct=np.sqrt(report['spectrum'].PSD_Vector.sum()*df)
+    assert np.isclose(reconstructed,direct,atol=1e-8)
+    assert bands.RMS_Vector_m_s2.iloc[1] > bands.RMS_Vector_m_s2.iloc[0]
+    assert len(plot_frequency_band_distribution(bands).data)==1
+
+
+def test_frequency_merge_tolerance_and_threshold_validation():
+    f=np.arange(0,100.01,.1)
+    p=np.full(len(f),1e-6)
+    for center,height in ((40, .10),(40.4,.08),(80,.04)):
+        p[np.argmin(abs(f-center))] += height
+    spec=pd.DataFrame({'Frequency_Hz':f,'PSD_Vector':p,
+                       'PSD_X':p,'PSD_Y':np.zeros(len(p)),'PSD_Z':np.zeros(len(p))})
+    merged=frequency_inventory(spec,fmin=1,fmax=90,min_prominence_db=6,
+                               merge_tolerance_hz=.5,min_tonal_rms_m_s2=.01)
+    separate=frequency_inventory(spec,fmin=1,fmax=90,min_prominence_db=6,
+                                 merge_tolerance_hz=.2,min_tonal_rms_m_s2=.01)
+    assert len(merged)==2 and merged.Peaks_merged.max()==2
+    assert len(separate)==3
+    with pytest.raises(ValueError,match='Merge tolerance'):
+        frequency_inventory(spec,merge_tolerance_hz=0)
+    with pytest.raises(ValueError,match='prominence'):
+        frequency_inventory(spec,min_prominence_db=-1)
+    with pytest.raises(ValueError,match='band edges'):
+        frequency_band_distribution(spec,edges=(0,50,10))
+
+
+def test_frequency_occupancy_recovers_intermittent_tone():
+    fs=400.;n=int(fs*36)
+    t=np.arange(n)/fs
+    rng=np.random.default_rng(101)
+    noise=.00003*rng.normal(size=(n,3))
+    # Always-on 40Hz X and 80Hz Y only in the final half.
+    a=np.array([.15*np.sin(2*np.pi*40*t),
+                np.where(t>=18,.07*np.sin(2*np.pi*80*t),0.),
+                np.zeros(n)]).T+noise
+    stamps=pd.Timestamp('2026-11-18 12:00:00')+pd.to_timedelta(t,unit='s')
+    frame=pd.DataFrame({'Time':stamps,'Sample':np.arange(1,n+1),
+                        'X_g':a[:,0]/G0,'Y_g':a[:,1]/G0,
+                        'Z_g':1+a[:,2]/G0})
+    from vse_vibration_core import VibrationLog
+    log=VibrationLog('synthetic',frame,{'fs_est_Hz':fs})
+    spec,_,_=compute_spectrum(log.frame,fs,welch_s=10.24)
+    inv=frequency_inventory(spec,fmin=5,fmax=100,min_prominence_db=6,
+                            min_tonal_rms_m_s2=.005,merge_tolerance_hz=.8)
+    assert any(abs(inv.Peak_Hz-40)<.3)
+    assert any(abs(inv.Peak_Hz-80)<.3)
+    occ=frequency_occurrence(log.frame,fs,inv,window_s=2.56,
+                             min_prominence_db=6,min_tonal_rms_m_s2=.015)
+    summary=frequency_occurrence_summary(occ,inv)
+    a40=summary.iloc[np.argmin(abs(summary.Peak_Hz-40))]
+    a80=summary.iloc[np.argmin(abs(summary.Peak_Hz-80))]
+    assert a40.Window_occupancy_pct>80
+    assert 25<a80.Window_occupancy_pct<70
+    assert a80.Approx_longest_flagged_span_s < 32
+    assert len(plot_frequency_occurrence(occ,inv).data)==1
+    assert len(plot_active_frequency_count(occ).data)==1
+    before=select_samples(log,start_s=1,end_s=14)
+    occ_before=frequency_occurrence(before,fs,inv,window_s=2.56,
+                             min_prominence_db=6,min_tonal_rms_m_s2=.015)
+    before_summary=frequency_occurrence_summary(occ_before,inv)
+    assert before_summary.iloc[np.argmin(abs(before_summary.Peak_Hz-80))].Detected_windows==0
+    assert frequency_occurrence_summary(occ.iloc[:0],inv).Detected_windows.sum()==0
+    assert frequency_occurrence(log.frame,fs,inv.iloc[:0]).empty
