@@ -124,3 +124,15 @@ boundary is flagged and excluded from timing comparisons. No drops or unrecovere
 episodes are shown as missing, never as zero-duration recovery.
 
 **Colab Run all UX (November 2026):** start/end timestamps and row filters are now always visible **above** the collapsible settings, under **TIME WINDOW — START / END**. The Drive CSV folder loader attempts the configured path and reports errors without interrupting the notebook. The Upload CSV cell deliberately defaults to `UPLOAD_NOW = False`; to upload, set it to `True` and run that cell explicitly. The direct-analysis fallback reads the same visible row/time controls rather than hardcoded dates.
+
+
+## VSE-16g Incubator Hotel Vibration & Labware Pattern Screening
+
+Analyze raw 3-axis accelerometer recordings including tab-delimited files with `.xls` extension, with interactive time cropping, RMS/shock timelines, Welch PSD, FFT, spectrogram, modal reference comparisons, and short-time exposure. The supplied labware frequency/amplitude model and real logger measurements are intentionally **not** committed to this public repository.
+
+- [Open interactive vibration notebook in Colab](https://colab.research.google.com/github/leotirto/Cell-Incubator-Chamber-Temperature-RH-Analytics/blob/main/vibration_analysis/VSE16g_Vibration_Labware_Analytics.ipynb)
+- [Read methodology, physics caveats, and CLI instructions](vibration_analysis/README.md)
+- Python engine: `vibration_analysis/vse_vibration_core.py`
+- Synthetic tests: `vibration_analysis/tests/test_vse_vibration.py`
+
+**Interpretation:** A frequency match is a hypothesis for follow-up testing, not evidence that a cell pattern will form. The sensor is on the hotel rather than the culture medium; mechanical transmissibility and the threshold amplitude convention must be validated experimentally.

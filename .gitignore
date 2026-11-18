@@ -31,3 +31,10 @@ venv/
 # Controller log analysis exports (private experimental measurements)
 controller_analysis_output/
 controller_analytics_exports/
+
+# VSE proprietary inputs and generated diagnostics
+vibration_results/
+vibration_analysis_output/
+vse_analysis_exports/
+*Vibrosentry-Record*
+*Frequency Affect to Cell Pattern*
